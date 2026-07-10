@@ -120,3 +120,7 @@ swift build                                  # debug build
 swift test                                   # run the suite
 swift test --filter onlyOneGrantAtATime      # run a single test
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

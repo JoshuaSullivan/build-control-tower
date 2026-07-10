@@ -31,14 +31,41 @@ cd build-control-tower
 ## Run the daemon
 
 The daemon must be running for agents to connect. It listens on
-`http://127.0.0.1:7373/mcp` (set `BCT_PORT` to change the port):
+`http://127.0.0.1:7373/mcp` (set `BCT_PORT` to change the port).
+
+**Auto-start at login (recommended).** Install it as a launchd agent — this
+installs the binary to `~/.local/bin`, starts it now, and relaunches it at every
+login (and if it crashes):
+
+```sh
+./build.sh --install-agent
+```
+
+**Run it manually instead:**
 
 ```sh
 ~/.local/bin/BuildControlTower
 ```
 
-To keep it alive across logins, run it under launchd (a LaunchAgent) or your
-process manager of choice.
+### Managing the launchd agent
+
+Because the agent uses `KeepAlive`, a plain `kill <pid>` **does not stop it** —
+launchd immediately relaunches it. Use `bootout`:
+
+```sh
+# Stop it now (stays stopped until re-installed):
+launchctl bootout gui/$(id -u)/com.build-control-tower.daemon
+
+# Start / restart it:
+launchctl kickstart -k gui/$(id -u)/com.build-control-tower.daemon
+
+# Status and logs:
+launchctl print gui/$(id -u)/com.build-control-tower.daemon
+tail -f ~/Library/Logs/build-control-tower.log
+
+# Remove it entirely (stop + delete the LaunchAgent):
+./build.sh --uninstall-agent
+```
 
 ## Register with agents
 

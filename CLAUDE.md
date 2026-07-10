@@ -12,7 +12,11 @@ swift test                                   # full test suite (Swift Testing)
 swift test --filter onlyOneGrantAtATime      # a single test
 ./build.sh                                   # test + release build, prints MCP registration snippet
 ./build.sh --install ~/.local/bin            # also install the binary to a stable path
+./build.sh --install-agent                   # install + start a launchd agent (auto-start at login)
+./build.sh --uninstall-agent                 # stop the daemon and remove the launchd agent
 ```
+
+The daemon runs under launchd with `KeepAlive`, so a plain `kill` gets relaunched — stop it with `launchctl bootout gui/$(id -u)/com.build-control-tower.daemon`.
 
 ## Stack & layout
 

@@ -20,10 +20,14 @@ struct Configuration: Sendable {
     /// considered "actively running" by `SystemBuildProbe`.
     var cpuThresholdPercent: Double
 
+    /// TCP port the daemon listens on (always bound to 127.0.0.1).
+    var port: Int
+
     static let `default` = Configuration(
         pollInterval: .seconds(120),
         staleGrantGrace: .seconds(360),
-        cpuThresholdPercent: 40
+        cpuThresholdPercent: 40,
+        port: 7373
     )
 
     /// Reads overrides from `BCT_POLL_SECONDS`, `BCT_GRACE_SECONDS`, and
@@ -34,6 +38,7 @@ struct Configuration: Sendable {
         var pollSeconds = 120
         var graceSeconds = 360
         var threshold = 40.0
+        var port = 7373
 
         if let raw = env["BCT_POLL_SECONDS"], let value = Int(raw), value > 0 {
             pollSeconds = value
@@ -43,6 +48,9 @@ struct Configuration: Sendable {
         }
         if let raw = env["BCT_CPU_THRESHOLD"], let value = Double(raw), value > 0 {
             threshold = value
+        }
+        if let raw = env["BCT_PORT"], let value = Int(raw), (1...65535).contains(value) {
+            port = value
         }
 
         // Design invariant: the grace window must be longer than one poll
@@ -55,7 +63,8 @@ struct Configuration: Sendable {
         return Configuration(
             pollInterval: .seconds(pollSeconds),
             staleGrantGrace: .seconds(graceSeconds),
-            cpuThresholdPercent: threshold
+            cpuThresholdPercent: threshold,
+            port: port
         )
     }
 }

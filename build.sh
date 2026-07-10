@@ -62,15 +62,22 @@ cat <<EOF
 Build Control Tower is ready.
   Binary: $BIN
 
-Register it with Claude Code:
-  claude mcp add build-control-tower "$BIN"
+Start the shared daemon (listens on http://127.0.0.1:7373/mcp; set BCT_PORT to change):
+  "$BIN"
+
+Then point every agent at the SAME daemon:
+  claude mcp add --transport http build-control-tower http://127.0.0.1:7373/mcp
 
 …or add to your MCP client config:
   {
     "mcpServers": {
       "build-control-tower": {
-        "command": "$BIN"
+        "type": "http",
+        "url": "http://127.0.0.1:7373/mcp"
       }
     }
   }
+
+The daemon must be running for agents to connect. To keep it alive across
+logins, run it under launchd (a LaunchAgent) or your process manager of choice.
 EOF

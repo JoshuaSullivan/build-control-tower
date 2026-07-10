@@ -17,12 +17,16 @@ swift test --filter onlyOneGrantAtATime      # a single test
 ## Stack & layout
 
 - **Swift 6.2 / macOS 14**, strict concurrency. A command-line executable (not an iOS app), so the iOS-specific defaults in the global CLAUDE.md don't apply here.
-- Depends only on the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk), pinned with `.upToNextMinor(from: "0.12.1")` — it's pre-1.0, so **don't loosen the pin** without checking for API breaks. The dependency compiles into the binary; there is no runtime dependency (e.g. no Node).
-- Source is one type per file under `Sources/BuildControlTower/`. The two pure cores — `QueueState` (the advancement state machine) and `SystemBuildProbe.isBuildActive` (the `ps` parser) — take time and the "build active" signal as plain parameters, so they're unit-tested directly without a clock or real processes. `BuildQueue` (an `actor`) wraps `QueueState` with the real clock + probe and is the *only* mutator, which is what enforces the single-grant invariant across concurrent MCP calls.
+- Dependencies: the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk) (MCP protocol), pinned `.upToNextMinor(from: "0.12.1")` — pre-1.0, so **don't loosen the pin** without checking for API breaks — and **Hummingbird** (the HTTP server; the SDK's HTTP transport is a bring-your-own-server adapter). `NIOCore` and `HTTPTypes` are declared directly only so the HTTP bridge can name `ByteBuffer` / `HTTPFields`. Everything compiles into the binary; no runtime dependency (e.g. no Node).
+- Source is one type per file under `Sources/BuildControlTower/`. The two pure cores — `QueueState` (advancement state machine) and `SystemBuildProbe.isBuildActive` (the `ps` parser) — take time and the "build active" signal as plain parameters, so they're unit-tested directly without a clock or real processes. `BuildQueue` (an `actor`) wraps `QueueState` with the real clock + probe and is the *only* mutator, which enforces the single-grant invariant across concurrent requests.
 
-## Hard constraint: stdout is the JSON-RPC channel
+## Transport: one HTTP daemon, one shared queue
 
-The server speaks MCP over stdio. **Never write to stdout** except through the SDK's transport — a stray `print` corrupts the protocol stream and breaks every client. Send diagnostics to stderr only.
+The binary is a long-lived HTTP daemon on `127.0.0.1:<BCT_PORT>/mcp`, **not** a stdio server. This is deliberate and load-bearing: with stdio, each MCP client spawns its own process (its own queue), so agents wouldn't coordinate. Over HTTP, every agent connects to the one daemon and shares one `BuildQueue`.
+
+- `HTTPDaemon` (the only file importing Hummingbird) bridges HTTP ⇄ MCP. `MCPSessionManager` (an actor) keeps **one MCP `Server` + `StatefulHTTPServerTransport` per client session**, all sharing the single `BuildQueue`. Stateful (not stateless) is required: it scopes JSON-RPC ids/SSE per session, so two agents both numbering ids from 1 don't misroute each other's responses.
+- **Name-collision constraint:** the MCP SDK and `swift-http-types` both define `HTTPRequest`/`HTTPResponse`. The two worlds are bridged by the neutral `DaemonRequest`/`DaemonResponse` types (`DaemonHTTP.swift`) so no file imports both. **Keep them separated** — don't import Hummingbird into an MCP file or vice-versa.
+- stdout is no longer a protocol channel, but keep diagnostics on **stderr** anyway (Hummingbird logs there; `HTTPDaemon.logStartup` writes there).
 
 ## What we're building
 

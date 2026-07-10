@@ -1,25 +1,29 @@
 import Foundation
-import MCP
 
 /// Executable entry point for the Build Control Tower MCP server.
 ///
-/// Serializes builds across concurrent agents so they don't overload the
-/// machine. See `tech-spec.md` for the design; the queue mechanics live in
-/// `QueueState` / `BuildQueue` and the process detection in `SystemBuildProbe`.
+/// Runs as a long-lived HTTP daemon on localhost so that every agent on the
+/// machine connects to one shared server — and therefore one shared build
+/// queue. See `tech-spec.md` for the design; the queue mechanics live in
+/// `QueueState` / `BuildQueue`, process detection in `SystemBuildProbe`, and
+/// the per-client MCP sessions in `MCPSessionManager`.
 @main
 struct BuildControlTower {
     static func main() async throws {
         let config = Configuration.fromEnvironment()
         let probe = SystemBuildProbe(cpuThresholdPercent: config.cpuThresholdPercent)
         let queue = BuildQueue(probe: probe, config: config)
+        let sessionManager = MCPSessionManager(queue: queue)
 
-        let server = await ServerFactory.makeServer(queue: queue)
-        let transport = StdioTransport()
-        try await server.start(transport: transport)
-
-        // Background safety net; the transport keeps the process alive.
+        // One safety-net poll drives the single shared queue.
         let pollTask = Task { await queue.runPollLoop() }
-        await server.waitUntilCompleted()
-        pollTask.cancel()
+        defer { pollTask.cancel() }
+
+        let daemon = HTTPDaemon(
+            sessionManager: sessionManager,
+            host: "127.0.0.1",
+            port: config.port
+        )
+        try await daemon.run()
     }
 }

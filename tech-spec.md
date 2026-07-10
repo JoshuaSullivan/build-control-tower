@@ -19,3 +19,14 @@ There are two mechanisms that advance the queue, and they play different roles:
    - **Stale-grant reclaim:** if a grant is outstanding but the agent has gone silent (crashed or never reported done) *and* no build CPU has been observed for a grace window, reclaim the grant and advance.
 
 The poll must be state-aware: it only *advances* when no grant is outstanding, and only *reclaims* (never re-grants) while a grant is outstanding. The grace window before reclaiming must be longer than one poll interval, so a slow-to-start build (low-CPU dependency resolution / indexing) is not mistaken for a dead agent.
+
+## Transport: one shared daemon over HTTP
+
+The queue only serializes builds if every agent talks to the **same** queue. A stdio MCP server can't guarantee that — each client spawns its own process, hence its own in-memory queue — so the control tower runs as a single long-lived **HTTP daemon** bound to `127.0.0.1` (Streamable HTTP via the MCP SDK's `StatefulHTTPServerTransport`, served by Hummingbird). Every agent registers the daemon's URL and shares the one queue.
+
+Each connected client gets its own MCP session (one `Server` + transport per session, so JSON-RPC ids and SSE streams stay isolated per client), but all sessions share the single `BuildQueue`. The stateful transport — not the stateless one — is required precisely for that isolation: stateless routing by bare JSON-RPC id would misroute responses between two agents that both number their requests from 1.
+
+Consequences to keep in mind:
+- The daemon must be running before agents connect (it is not auto-spawned the way a stdio server is). Run it under launchd or a process manager.
+- The queue is in-memory, so a daemon restart clears it. Acceptable for a session-scoped tool; agents simply re-request.
+- Sessions that vanish without a `DELETE` currently leak their per-session `Server`/transport. Fine for a handful of agents; add idle-session reaping if that changes.

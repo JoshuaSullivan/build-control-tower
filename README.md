@@ -9,6 +9,10 @@ It works for both command-line `xcodebuild`/`swift build` and builds started
 inside Xcode — the server watches system CPU to notice builds it didn't grant
 (for example, a manual ⌘B in Xcode) and holds the queue while they run.
 
+It runs as a **single long-lived HTTP daemon** on localhost. Every agent on the
+machine connects to that one daemon, so they all share one build queue. (Each
+agent gets its own MCP session; the shared state is the queue, not the session.)
+
 See [`tech-spec.md`](tech-spec.md) for the full design.
 
 ## Requirements
@@ -24,11 +28,24 @@ cd build-control-tower
 ./build.sh --install ~/.local/bin      # runs tests, builds release, installs the binary
 ```
 
-`build.sh` prints a ready-to-paste registration snippet. To register with Claude
-Code:
+## Run the daemon
+
+The daemon must be running for agents to connect. It listens on
+`http://127.0.0.1:7373/mcp` (set `BCT_PORT` to change the port):
 
 ```sh
-claude mcp add build-control-tower ~/.local/bin/BuildControlTower
+~/.local/bin/BuildControlTower
+```
+
+To keep it alive across logins, run it under launchd (a LaunchAgent) or your
+process manager of choice.
+
+## Register with agents
+
+Point **every** agent that shares the machine at the same daemon URL:
+
+```sh
+claude mcp add --transport http build-control-tower http://127.0.0.1:7373/mcp
 ```
 
 …or add it to any MCP client config:
@@ -36,13 +53,13 @@ claude mcp add build-control-tower ~/.local/bin/BuildControlTower
 ```json
 {
   "mcpServers": {
-    "build-control-tower": { "command": "/absolute/path/to/BuildControlTower" }
+    "build-control-tower": {
+      "type": "http",
+      "url": "http://127.0.0.1:7373/mcp"
+    }
   }
 }
 ```
-
-Point every agent that shares the machine at the **same** server so they share
-one queue.
 
 ## How an agent uses it
 
@@ -64,6 +81,7 @@ Tunable at launch via environment variables (all optional):
 
 | Variable            | Default | Meaning                                                        |
 | ------------------- | ------- | -------------------------------------------------------------- |
+| `BCT_PORT`          | `7373`  | Localhost TCP port the daemon listens on.                      |
 | `BCT_POLL_SECONDS`  | `120`   | Background safety-net poll interval.                           |
 | `BCT_GRACE_SECONDS` | `360`   | Idle time before a silent grant is reclaimed (kept > poll).    |
 | `BCT_CPU_THRESHOLD` | `40`    | Combined compiler `%CPU` above which a build counts as active. |

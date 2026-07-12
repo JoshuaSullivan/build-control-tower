@@ -18,7 +18,11 @@ let package = Package(
         // SSE streaming. Built on swift-nio, which the MCP SDK already pulls in.
         .package(
             url: "https://github.com/hummingbird-project/hummingbird.git",
-            from: "2.0.0"
+            from: "2.0.0",
+            // Opt out of Hummingbird's default `ConfigurationSupport` trait: it
+            // pulls in swift-configuration (~0.5 MB of code) for env/file-driven
+            // config we don't use — we configure the server in-process.
+            traits: []
         ),
         // Both already in the graph transitively (via Hummingbird / the MCP
         // SDK); declared directly only so the HTTP bridge can name ByteBuffer

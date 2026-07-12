@@ -135,7 +135,11 @@ if [[ -n "$INSTALL_DIR" ]]; then
     mkdir -p "$INSTALL_DIR"
     cp "$BIN" "$INSTALL_DIR/"
     BIN="$INSTALL_DIR/BuildControlTower"
-    echo "==> Installed to $BIN"
+    # Strip local symbols from the installed copy — SPM's release build leaves
+    # them in, and they're ~half the file. The full-symbol binary stays in
+    # .build if you ever need it for crash symbolication.
+    strip -x "$BIN"
+    echo "==> Installed and stripped: $BIN ($(du -h "$BIN" | cut -f1))"
     [[ ":$PATH:" == *":$INSTALL_DIR:"* ]] || INSTALL_ON_PATH=0
 fi
 

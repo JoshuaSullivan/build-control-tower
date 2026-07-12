@@ -6,7 +6,7 @@ enum ServerFactory {
     static func makeServer(queue: BuildQueue) async -> Server {
         let server = Server(
             name: "build-control-tower",
-            version: "0.1.0",
+            version: "0.1.2",
             capabilities: .init(tools: .init(listChanged: false))
         )
 

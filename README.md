@@ -23,10 +23,22 @@ See [`tech-spec.md`](tech-spec.md) for the full design.
 ## Install
 
 ```sh
-git clone <your-remote> build-control-tower
+git clone https://github.com/JoshuaSullivan/build-control-tower.git
 cd build-control-tower
-./build.sh --install ~/.local/bin      # runs tests, builds release, installs the binary
+./build.sh                             # tests, builds release, installs to ~/.local/bin
 ```
+
+`./build.sh` installs to `~/.local/bin` by default (a per-user location — no
+`sudo`, consistent with the per-user launchd agent). To change it:
+
+```sh
+./build.sh --prefix /usr/local/bin     # install somewhere else
+./build.sh --no-install                # build only, leave the binary in .build
+```
+
+If the install directory isn't on your `PATH`, the script prints the line to add
+it. For the auto-starting daemon you don't need it on `PATH` at all — launchd and
+the agents invoke it by absolute path / HTTP URL. See below.
 
 ## Run the daemon
 
@@ -69,13 +81,64 @@ tail -f ~/Library/Logs/build-control-tower.log
 
 ## Register with agents
 
-Point **every** agent that shares the machine at the same daemon URL:
+The daemon is a single shared endpoint: `http://127.0.0.1:7373/mcp`. Point
+**every** agent on the machine at that same URL so they all share one queue.
+Because the queue is machine-global, register it globally (user-level), not
+per-project.
+
+### GitHub Copilot CLI
+
+```sh
+copilot mcp add --transport http build-control-tower http://127.0.0.1:7373/mcp
+```
+
+Or, inside an interactive `copilot` session, run `/mcp add` and choose the
+**HTTP** type. Either path writes to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "build-control-tower": {
+      "type": "http",
+      "url": "http://127.0.0.1:7373/mcp",
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+### GitHub Copilot in VS Code
+
+Add it once, globally, so it's available in every workspace:
+
+```sh
+code --add-mcp '{"name":"build-control-tower","type":"http","url":"http://127.0.0.1:7373/mcp"}'
+```
+
+Or run **MCP: Add Server** from the Command Palette (⇧⌘P) → **HTTP** → paste the
+URL above → choose **Global**. To scope it to a single project instead, commit a
+`.vscode/mcp.json` — note the root key is `servers`, **not** `mcpServers`:
+
+```json
+{
+  "servers": {
+    "build-control-tower": {
+      "type": "http",
+      "url": "http://127.0.0.1:7373/mcp"
+    }
+  }
+}
+```
+
+### Claude Code
 
 ```sh
 claude mcp add --transport http build-control-tower http://127.0.0.1:7373/mcp
 ```
 
-…or add it to any MCP client config:
+### Any other MCP client
+
+Add an HTTP server entry pointing at the same URL:
 
 ```json
 {

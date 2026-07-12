@@ -11,22 +11,30 @@ LOG_FILE="$HOME/Library/Logs/build-control-tower.log"
 DOMAIN="gui/$(id -u)"
 PORT="${BCT_PORT:-7373}"
 
-INSTALL_DIR=""
+# Per-user install location by default: this is a per-user daemon (its launchd
+# agent and config live under $HOME), so no sudo and no /usr/local ownership
+# fights. Override with --prefix; opt out with --no-install.
+DEFAULT_INSTALL_DIR="$HOME/.local/bin"
+INSTALL_DIR="$DEFAULT_INSTALL_DIR"
 RUN_TESTS=1
 INSTALL_AGENT=0
+SKIP_INSTALL=0
 
 usage() {
-    cat <<'USAGE'
+    cat <<USAGE
 Build Control Tower — build & deploy helper.
 
 Usage:
-  ./build.sh                    Run tests, then build the release binary.
-  ./build.sh --install DIR      Also copy the binary into DIR (e.g. ~/.local/bin).
+  ./build.sh                    Run tests, build the release binary, and install
+                                it to $DEFAULT_INSTALL_DIR.
+  ./build.sh --prefix DIR       Install into DIR instead of the default.
+  ./build.sh --no-install       Build only; leave the binary in .build.
   ./build.sh --install-agent    Install + start a launchd agent that auto-starts
-                                the daemon at login. Installs the binary to
-                                ~/.local/bin (or the --install DIR if given).
+                                the daemon at login (honors --prefix).
   ./build.sh --uninstall-agent  Stop the daemon and remove the launchd agent.
   ./build.sh --skip-tests       Build without running the test suite first.
+
+  --install DIR is accepted as an alias for --prefix DIR.
 
 Environment:
   BCT_PORT   Port the daemon listens on (default 7373); baked into the agent.
@@ -85,11 +93,12 @@ uninstall_agent() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --install)
+        --prefix|--install)
             INSTALL_DIR="${2:-}"
-            [[ -n "$INSTALL_DIR" ]] || { echo "error: --install requires a directory" >&2; exit 2; }
+            [[ -n "$INSTALL_DIR" ]] || { echo "error: $1 requires a directory" >&2; exit 2; }
             shift 2
             ;;
+        --no-install) SKIP_INSTALL=1; shift ;;
         --install-agent) INSTALL_AGENT=1; shift ;;
         --uninstall-agent) uninstall_agent; exit 0 ;;
         --skip-tests) RUN_TESTS=0; shift ;;
@@ -98,9 +107,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# The launchd agent needs a stable binary path, so it implies an install.
-if [[ "$INSTALL_AGENT" -eq 1 && -z "$INSTALL_DIR" ]]; then
-    INSTALL_DIR="$HOME/.local/bin"
+# The launchd agent needs a stable binary path on disk, so it can't skip install.
+if [[ "$INSTALL_AGENT" -eq 1 && "$SKIP_INSTALL" -eq 1 ]]; then
+    echo "error: --no-install cannot be combined with --install-agent (the agent needs an installed binary)" >&2
+    exit 2
+fi
+
+# --no-install wins: build only, leave the binary in .build.
+if [[ "$SKIP_INSTALL" -eq 1 ]]; then
+    INSTALL_DIR=""
 fi
 
 if [[ "$RUN_TESTS" -eq 1 ]]; then
@@ -115,11 +130,13 @@ BIN_DIR="$(swift build -c release --show-bin-path)"
 BIN="$BIN_DIR/BuildControlTower"
 [[ -x "$BIN" ]] || { echo "error: expected binary not found at $BIN" >&2; exit 1; }
 
+INSTALL_ON_PATH=1
 if [[ -n "$INSTALL_DIR" ]]; then
     mkdir -p "$INSTALL_DIR"
     cp "$BIN" "$INSTALL_DIR/"
     BIN="$INSTALL_DIR/BuildControlTower"
     echo "==> Installed to $BIN"
+    [[ ":$PATH:" == *":$INSTALL_DIR:"* ]] || INSTALL_ON_PATH=0
 fi
 
 if [[ "$INSTALL_AGENT" -eq 1 ]]; then
@@ -131,8 +148,13 @@ Build Control Tower is running and will auto-start at login.
   Endpoint: http://127.0.0.1:$PORT/mcp
   Logs:     $LOG_FILE
 
-Register every agent with the SAME daemon:
-  claude mcp add --transport http build-control-tower http://127.0.0.1:$PORT/mcp
+Register every agent with the SAME daemon (pick your client):
+  GitHub Copilot CLI:
+    copilot mcp add --transport http build-control-tower http://127.0.0.1:$PORT/mcp
+  VS Code (Copilot):
+    code --add-mcp '{"name":"build-control-tower","type":"http","url":"http://127.0.0.1:$PORT/mcp"}'
+  Claude Code:
+    claude mcp add --transport http build-control-tower http://127.0.0.1:$PORT/mcp
 
 Manage the daemon:
   Stop it (and disable auto-start until re-installed):
@@ -149,6 +171,15 @@ EOF
     exit 0
 fi
 
+if [[ "$INSTALL_ON_PATH" -eq 0 ]]; then
+    cat <<EOF
+
+Note: $INSTALL_DIR is not on your PATH. Either use the full path shown below,
+or add it to your shell profile:
+  echo 'export PATH="$INSTALL_DIR:\$PATH"' >> ~/.zshrc && source ~/.zshrc
+EOF
+fi
+
 cat <<EOF
 
 Build Control Tower is ready.
@@ -157,13 +188,18 @@ Build Control Tower is ready.
 Start the shared daemon (listens on http://127.0.0.1:$PORT/mcp; set BCT_PORT to change):
   "$BIN"
 
-Or install it as an auto-starting launchd agent:
+Or install it as an auto-starting launchd agent (recommended):
   ./build.sh --install-agent
 
-Then point every agent at the SAME daemon:
-  claude mcp add --transport http build-control-tower http://127.0.0.1:$PORT/mcp
+Then point every agent at the SAME daemon (pick your client):
+  GitHub Copilot CLI:
+    copilot mcp add --transport http build-control-tower http://127.0.0.1:$PORT/mcp
+  VS Code (Copilot):
+    code --add-mcp '{"name":"build-control-tower","type":"http","url":"http://127.0.0.1:$PORT/mcp"}'
+  Claude Code:
+    claude mcp add --transport http build-control-tower http://127.0.0.1:$PORT/mcp
 
-…or add to your MCP client config:
+…or add to any MCP client config (VS Code's .vscode/mcp.json uses "servers", not "mcpServers"):
   {
     "mcpServers": {
       "build-control-tower": {

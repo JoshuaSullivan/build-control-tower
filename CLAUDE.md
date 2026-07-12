@@ -10,8 +10,9 @@ Swift Package Manager executable; the SDK is fetched on first build.
 swift build                                  # debug build
 swift test                                   # full test suite (Swift Testing)
 swift test --filter onlyOneGrantAtATime      # a single test
-./build.sh                                   # test + release build, prints MCP registration snippet
-./build.sh --install ~/.local/bin            # also install the binary to a stable path
+./build.sh                                   # test + release build, installs to ~/.local/bin, prints registration snippet
+./build.sh --prefix /usr/local/bin           # install to a different location (default ~/.local/bin)
+./build.sh --no-install                       # build only, leave the binary in .build
 ./build.sh --install-agent                   # install + start a launchd agent (auto-start at login)
 ./build.sh --uninstall-agent                 # stop the daemon and remove the launchd agent
 ```

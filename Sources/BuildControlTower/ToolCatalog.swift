@@ -9,11 +9,15 @@ enum ToolCatalog {
         Tool(
             name: "request_build",
             description: """
-                Request permission to build. Adds you to the global build queue \
-                and returns a ticket id plus whether you are cleared to build \
-                now. If you are not cleared, poll build_status with the returned \
-                ticket until it reports GRANTED, then run your build. Always call \
-                finish_build when your build completes.
+                Request permission to build. Call this only when you are ready to \
+                build right now — as the immediate step before you start the build, \
+                not while you still have edits or other work to do first. Adds you \
+                to the global build queue and returns a ticket id plus whether you \
+                are cleared to build now. If you are not cleared, poll build_status \
+                with the returned ticket until it reports GRANTED, then run your \
+                build. Call finish_build the moment the build finishes — or right \
+                away if anything stops it from running — so you never hold the \
+                ticket during unrelated work.
                 """,
             inputSchema: [
                 "type": "object",
@@ -45,9 +49,11 @@ enum ToolCatalog {
         Tool(
             name: "finish_build",
             description: """
-                Report that your build has finished, or that you are abandoning \
-                a queued request. Releases your slot so the next agent can build. \
-                Always call this when you are done.
+                Release your build slot so the next agent can build. Call this the \
+                moment your build finishes (success or failure), and immediately if \
+                the build is cancelled, blocked, or you get sidetracked before it \
+                runs — never hold the ticket while doing unrelated work. Also call \
+                it to abandon a queued request.
                 """,
             inputSchema: [
                 "type": "object",

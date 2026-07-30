@@ -22,7 +22,7 @@ struct BuildControlTower {
         let daemon = HTTPDaemon(
             sessionManager: sessionManager,
             host: "127.0.0.1",
-            port: config.port,
+            config: config,
             snapshotProvider: { await queue.snapshot() }
         )
         try await daemon.run()

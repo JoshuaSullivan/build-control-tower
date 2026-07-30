@@ -20,6 +20,12 @@ There are two mechanisms that advance the queue, and they play different roles:
 
 The poll must be state-aware: it only *advances* when no grant is outstanding, and only *reclaims* (never re-grants) while a grant is outstanding. The grace window before reclaiming must be longer than one poll interval, so a slow-to-start build (low-CPU dependency resolution / indexing) is not mistaken for a dead agent.
 
+## Heartbeats
+
+A granted agent is otherwise invisible until it finishes, so a long or low-CPU build looks identical to a crashed one. Agents therefore check in with `build_heartbeat` while their build runs, roughly three times per grace window, optionally carrying their own 0–100 estimate of how far along the build is. The estimate is attached to the active ticket and shown in `queue_status` and the `/status` JSON, so other agents and a monitoring UI can see who is building what and how it's going. Agents are pushed to supply it but never required to; a rough guess is more useful than silence.
+
+The silence clock the reclaim measures runs from the last sign of life, not the grant time, and *any* call naming the ticket counts — a status poll is proof of life just as much as a heartbeat. Heartbeats can only ever prolong a grant: a missed one never reclaims a slot on its own, because the `!buildActive` guard still has to agree that nothing is building. Reclaiming on silence alone would let the tower cut off a live build whose agent was just slow to report, which is precisely the double-build it exists to prevent.
+
 ## Transport: one shared daemon over HTTP
 
 The queue only serializes builds if every agent talks to the **same** queue. A stdio MCP server can't guarantee that — each client spawns its own process, hence its own in-memory queue — so the control tower runs as a single long-lived **HTTP daemon** bound to `127.0.0.1` (Streamable HTTP via the MCP SDK's `StatefulHTTPServerTransport`, served by Hummingbird). Every agent registers the daemon's URL and shares the one queue.

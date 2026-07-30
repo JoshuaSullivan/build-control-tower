@@ -22,10 +22,15 @@ actor BuildQueue {
         self.config = config
     }
 
+    /// How often a building agent should send `build_heartbeat`, quoted to the
+    /// agent when its slot is granted so the advice stays honest whatever
+    /// `BCT_GRACE_SECONDS` this daemon was launched with.
+    var recommendedHeartbeatInterval: Duration { config.recommendedHeartbeatInterval }
+
     /// Enqueue a new request and immediately try to advance the queue (fast
     /// path). Returns the minted ticket id and where it landed.
-    func request(agent: String?) async -> (id: UUID, disposition: BuildDisposition) {
-        let ticket = BuildTicket(id: UUID(), agent: agent, requestedAt: uptime())
+    func request(agent: String?, task: String?) async -> (id: UUID, disposition: BuildDisposition) {
+        let ticket = BuildTicket(id: UUID(), agent: agent, task: task, requestedAt: uptime())
         state.enqueue(ticket)
         await reconcile()
         return (ticket.id, state.disposition(of: ticket.id))
@@ -34,9 +39,33 @@ actor BuildQueue {
     /// Re-check a ticket. Also drives a reconcile so that an actively polling
     /// agent helps advance the queue (e.g. picks up promptly once an external
     /// build clears), rather than waiting for the slow background poll.
+    ///
+    /// The poll doubles as a sign of life: any call naming a ticket proves its
+    /// owner is still around, so a granted agent that polls instead of using
+    /// `heartbeat` is never reclaimed out from under itself.
     func status(of id: UUID) async -> BuildDisposition {
+        state.touch(id, now: uptime())
         await reconcile()
         return state.disposition(of: id)
+    }
+
+    /// Record that a building agent is still alive, with its optional estimate
+    /// of how far along the build is.
+    ///
+    /// - Returns: where the ticket now stands — so an agent that already lost its
+    ///   grant finds out on its next check-in — along with the progress the tower
+    ///   now holds for it, which is the clamped estimate just reported or the
+    ///   previous one if this beat carried no number.
+    func heartbeat(_ id: UUID, progress: Int?) async -> (disposition: BuildDisposition, progress: Int?) {
+        // Touch before reconciling: the reconcile this call drives must never
+        // reclaim the very ticket that just proved it is alive.
+        state.touch(id, now: uptime(), progress: progress)
+        await reconcile()
+
+        let disposition = state.disposition(of: id)
+        // Only report progress back if this ticket still owns the slot; otherwise
+        // `active` describes some other agent's build.
+        return (disposition, disposition == .granted ? state.active?.progress : nil)
     }
 
     /// Release whatever slot the ticket holds and advance the queue. This is
@@ -51,9 +80,26 @@ actor BuildQueue {
 
     /// A human-readable snapshot of the queue.
     func snapshot() -> QueueSnapshot {
-        QueueSnapshot(
-            active: state.active.map { ActiveEntry(id: $0.ticket.id, agent: $0.ticket.agent) },
-            waiting: state.waiting.map { WaitingEntry(id: $0.id, agent: $0.agent) }
+        let now = uptime()
+        return QueueSnapshot(
+            active: state.active.map {
+                ActiveEntry(
+                    id: $0.ticket.id,
+                    agent: $0.ticket.agent,
+                    task: $0.ticket.task,
+                    progress: $0.progress,
+                    elapsedSeconds: Self.seconds(now - $0.grantedAt),
+                    secondsSinceHeartbeat: Self.seconds(now - $0.lastSeen)
+                )
+            },
+            waiting: state.waiting.map {
+                WaitingEntry(
+                    id: $0.id,
+                    agent: $0.agent,
+                    task: $0.task,
+                    waitingSeconds: Self.seconds(now - $0.requestedAt)
+                )
+            }
         )
     }
 
@@ -76,5 +122,10 @@ actor BuildQueue {
     /// Elapsed time since the server started.
     private func uptime() -> Duration {
         startInstant.duration(to: clock.now)
+    }
+
+    /// Whole seconds in a duration, for the snapshot's age fields.
+    private static func seconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds)
     }
 }

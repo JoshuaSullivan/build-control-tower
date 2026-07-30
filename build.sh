@@ -37,8 +37,34 @@ Usage:
   --install DIR is accepted as an alias for --prefix DIR.
 
 Environment:
-  BCT_PORT   Port the daemon listens on (default 7373); baked into the agent.
+  Whatever is set when you run --install-agent is baked into the launchd plist,
+  so it survives logout and reboot. Unset variables are omitted, leaving the
+  daemon's own defaults in charge.
+
+  BCT_PORT           Port the daemon listens on (default 7373).
+  BCT_POLL_SECONDS   Background safety-net poll interval (default 120).
+  BCT_GRACE_SECONDS  Silence before a stale grant is reclaimed (default 360).
+                     Agents are told to heartbeat at a third of this.
+  BCT_CPU_THRESHOLD  Compiler %CPU above which a build counts as active (default 40).
+
+  e.g.  BCT_GRACE_SECONDS=600 ./build.sh --install-agent
 USAGE
+}
+
+# Tunables worth persisting across reboots. Only those actually set at install
+# time are written into the plist: omitting the rest keeps the binary's own
+# defaults authoritative, so they can change between releases without every
+# existing agent pinning a stale value.
+TUNABLES=(BCT_POLL_SECONDS BCT_GRACE_SECONDS BCT_CPU_THRESHOLD)
+
+plist_environment() {
+    printf '        <key>BCT_PORT</key>\n        <string>%s</string>\n' "$PORT"
+    local var value
+    for var in "${TUNABLES[@]}"; do
+        value="${!var:-}"
+        [[ -n "$value" ]] || continue
+        printf '        <key>%s</key>\n        <string>%s</string>\n' "$var" "$value"
+    done
 }
 
 write_agent_plist() {
@@ -57,8 +83,7 @@ write_agent_plist() {
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>BCT_PORT</key>
-        <string>$PORT</string>
+$(plist_environment)
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -151,6 +176,10 @@ if [[ "$INSTALL_AGENT" -eq 1 ]]; then
 Build Control Tower is running and will auto-start at login.
   Endpoint: http://127.0.0.1:$PORT/mcp
   Logs:     $LOG_FILE
+  Tuning:   baked into the agent, so it survives reboots. The daemon logs the
+            values actually in force (including the heartbeat cadence agents
+            are told to use) on its first line:
+              grep Configuration: $LOG_FILE
 
 Register every agent with the SAME daemon (pick your client):
   GitHub Copilot CLI:

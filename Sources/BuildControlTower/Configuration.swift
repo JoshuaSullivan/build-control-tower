@@ -23,6 +23,27 @@ struct Configuration: Sendable {
     /// TCP port the daemon listens on (always bound to 127.0.0.1).
     var port: Int
 
+    /// How often a building agent is asked to send `build_heartbeat`.
+    ///
+    /// A third of the stale window, so a grant survives two missed check-ins
+    /// before it is even a candidate for reclaim. This is the single definition
+    /// of the cadence: the queue quotes it to agents when granting a slot, and
+    /// the daemon logs it at startup.
+    var recommendedHeartbeatInterval: Duration { staleGrantGrace / 3 }
+
+    /// One-line summary of the values actually in force, written to the log at
+    /// startup so the effective tuning of a long-running daemon is discoverable
+    /// without guessing which environment it was launched with.
+    var summary: String {
+        let seconds = { (duration: Duration) in "\(duration.components.seconds)s" }
+        return """
+            port \(port), poll \(seconds(pollInterval)), stale-grant grace \
+            \(seconds(staleGrantGrace)) (heartbeat cadence \
+            \(seconds(recommendedHeartbeatInterval))), CPU threshold \
+            \(cpuThresholdPercent.formatted(.number))%
+            """
+    }
+
     static let `default` = Configuration(
         pollInterval: .seconds(120),
         staleGrantGrace: .seconds(360),

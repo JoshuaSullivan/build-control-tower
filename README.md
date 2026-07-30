@@ -153,17 +153,52 @@ Add an HTTP server entry pointing at the same URL:
 
 ## How an agent uses it
 
-1. **`request_build`** — join the queue. Returns a ticket id and whether you're
+1. **`request_build`** — join the queue. Pass `agent` (who you are) and `task`
+   (what you're building) so a human can tell concurrent agents apart; both are
+   optional but strongly encouraged. Returns a ticket id and whether you're
    cleared to build now (`GRANTED`) or `QUEUED`.
 2. **`build_status`** — if queued, poll with your ticket (~every 30–60s) until it
    reports `GRANTED`, then run your build.
-3. **`finish_build`** — always call this when the build finishes (or if you
+3. **`build_heartbeat`** — while the build runs, check in with your ticket and an
+   optional `progress` estimate (0–100). The interval is quoted to the agent in
+   the `GRANTED` reply and repeated in every heartbeat reply — it's a third of
+   this daemon's stale window (~120s at the default `BCT_GRACE_SECONDS=360`), so
+   agents are told to use the number they were given rather than assume one.
+   This is what tells the
+   tower a long or quiet build is alive rather than abandoned, and the progress
+   value is shown to other agents and to monitoring tools.
+4. **`finish_build`** — always call this when the build finishes (or if you
    abandon a queued request). It immediately hands the slot to the next agent.
-4. **`queue_status`** — inspect who's building and who's waiting.
+5. **`queue_status`** — inspect who's building and who's waiting.
 
 If a granted agent crashes and never calls `finish_build`, a background poll
-reclaims the abandoned slot once it has been idle (no build CPU) past a grace
-window, so the queue can't deadlock.
+reclaims the abandoned slot once the agent has been silent (no heartbeat, no
+status poll) *and* no build CPU has been seen for a grace window, so the queue
+can't deadlock. Heartbeats only ever extend a grant — a missed one never
+reclaims a slot on its own while a build is visibly running.
+
+## Monitoring
+
+`GET http://127.0.0.1:7373/status` returns the same queue view as `queue_status`
+as JSON, for a menu-bar app or any out-of-band monitor. `active` is absent when
+nothing holds the slot; `agent`, `task`, and `progress` are absent when the agent
+didn't report them (so "no estimate yet" is distinguishable from `0`):
+
+```json
+{
+  "active": {
+    "id": "8B0E…",
+    "agent": "claude-A",
+    "task": "xcodebuild Teams iOS",
+    "progress": 45,
+    "elapsedSeconds": 90,
+    "secondsSinceHeartbeat": 20
+  },
+  "waiting": [
+    { "id": "7C02…", "agent": "claude-B", "task": "swift test", "waitingSeconds": 240 }
+  ]
+}
+```
 
 ## Configuration
 
@@ -173,8 +208,25 @@ Tunable at launch via environment variables (all optional):
 | ------------------- | ------- | -------------------------------------------------------------- |
 | `BCT_PORT`          | `7373`  | Localhost TCP port the daemon listens on.                      |
 | `BCT_POLL_SECONDS`  | `120`   | Background safety-net poll interval.                           |
-| `BCT_GRACE_SECONDS` | `360`   | Idle time before a silent grant is reclaimed (kept > poll).    |
+| `BCT_GRACE_SECONDS` | `360`   | Silence before a grant is reclaimed (kept > poll). Agents are told to heartbeat at a third of this. |
 | `BCT_CPU_THRESHOLD` | `40`    | Combined compiler `%CPU` above which a build counts as active. |
+
+**Making them stick.** Whatever is set when you run `./build.sh --install-agent`
+is baked into the launchd plist, so it survives logout and reboot:
+
+```sh
+BCT_GRACE_SECONDS=900 ./build.sh --install-agent   # agents now told to beat every 300s
+```
+
+Variables you don't set are omitted from the plist, leaving the daemon's own
+defaults in charge so they can change between releases. The daemon logs the
+values actually in force on startup — useful for a long-running agent whose
+launch environment you no longer remember:
+
+```sh
+grep Configuration: ~/Library/Logs/build-control-tower.log
+# Configuration: port 7373, poll 120s, stale-grant grace 900s (heartbeat cadence 300s), CPU threshold 40%
+```
 
 ## Development
 

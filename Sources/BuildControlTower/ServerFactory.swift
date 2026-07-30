@@ -15,11 +15,22 @@ enum ServerFactory {
         build you run (xcodebuild, swift build, or an Xcode build via another tool):
         1. Request the slot only when you are ready to build right now — call \
         request_build as the immediate step before you start the build, not while \
-        you still have edits, investigation, or other work to finish first. You get \
+        you still have edits, investigation, or other work to finish first. Pass \
+        'agent' (who you are) and 'task' (a short description of what you're \
+        building) so a human watching the queue can tell the agents apart. You get \
         a ticket and a disposition.
         2. Build only on GRANTED. If QUEUED, do not build yet; poll build_status \
         with your ticket every ~30-60s until it reports GRANTED.
-        3. Release the slot the moment the build is done or is no longer going to \
+        3. While the build runs, call build_heartbeat with your ticket at the \
+        interval this server quotes you — the GRANTED reply names it in seconds, \
+        and every heartbeat reply repeats it. It is derived from this daemon's \
+        own stale-grant window, so do not assume a fixed cadence; use the number \
+        you were given. A grant that goes silent past the stale window with no build CPU \
+        visible is treated as a crashed agent and reclaimed, so heartbeats are what \
+        protect a long or quiet build's slot. Include a 0-100 'progress' estimate \
+        whenever you can make one — other agents and the monitoring UI show it, and \
+        a rough guess beats nothing.
+        4. Release the slot the moment the build is done or is no longer going to \
         run. Call finish_build when the build ends — success or failure — and also \
         right away if anything stops you from building: you get sidetracked, the \
         build is cancelled, an earlier step fails, or you abandon a queued request. \
@@ -35,7 +46,7 @@ enum ServerFactory {
     static func makeServer(queue: BuildQueue) async -> Server {
         let server = Server(
             name: "build-control-tower",
-            version: "0.1.4",
+            version: "0.2.0",
             instructions: instructions,
             capabilities: .init(tools: .init(listChanged: false))
         )

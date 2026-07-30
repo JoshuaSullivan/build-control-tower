@@ -12,7 +12,9 @@ import NIOCore
 struct HTTPDaemon {
     let sessionManager: MCPSessionManager
     let host: String
-    let port: Int
+
+    /// The tuning in force, for the listen port and the startup log.
+    let config: Configuration
 
     /// Supplies a fresh queue snapshot for the read-only `/status` endpoint.
     /// A closure (rather than the `BuildQueue` actor itself) keeps the actor out
@@ -50,7 +52,7 @@ struct HTTPDaemon {
 
         let app = Application(
             router: router,
-            configuration: .init(address: .hostname(host, port: port))
+            configuration: .init(address: .hostname(host, port: config.port))
         )
         try await app.runService()
     }
@@ -121,9 +123,11 @@ struct HTTPDaemon {
     }
 
     private func logStartup() {
+        let base = "http://\(host):\(config.port)"
         let message = """
-            Build Control Tower listening on http://\(host):\(port)/\(Self.path) \
-            (status: http://\(host):\(port)/\(Self.statusPath))
+            Build Control Tower listening on \(base)/\(Self.path) \
+            (status: \(base)/\(Self.statusPath))
+            Configuration: \(config.summary)
 
             """
         FileHandle.standardError.write(Data(message.utf8))

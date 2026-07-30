@@ -39,22 +39,24 @@ The binary is a long-lived HTTP daemon on `127.0.0.1:<BCT_PORT>/mcp`, **not** a 
 
 ## Core design (from `tech-spec.md`)
 
-The server maintains a single global build queue and exposes four tools (defined in `ToolCatalog`): `request_build`, `build_status`, `finish_build`, `queue_status`. The flow:
+The server maintains a single global build queue and exposes five tools (defined in `ToolCatalog`): `request_build`, `build_status`, `build_heartbeat`, `finish_build`, `queue_status`. The flow:
 
-1. **Schedule** (`request_build`) — the agent's request is appended to the queue and gets a ticket id. If nothing is building, the head of the queue is granted immediately.
+1. **Schedule** (`request_build`) — the agent's request is appended to the queue and gets a ticket id, plus optional `agent`/`task` labels for display. If nothing is building, the head of the queue is granted immediately.
 2. **Poll** (`build_status`) — a queued agent re-checks its ticket until `GRANTED`. This call also drives a reconcile, so an actively-waiting agent helps advance the queue faster than the background poll.
-3. **Report completion** (`finish_build`) — releases the slot so the next request is granted.
+3. **Check in** (`build_heartbeat`) — a building agent reports it's still alive, optionally with a 0–100 progress estimate that surfaces in `queue_status` and `/status`.
+4. **Report completion** (`finish_build`) — releases the slot so the next request is granted.
 
 ### Two mechanisms advance the queue
 
 - **Explicit release (fast path).** The completion call immediately advances the queue and grants the next request. This is the common case and is what keeps throughput high — agents should not idle waiting on the poll.
 - **Slow poll (1–5 min safety net).** A background loop inspects live process/CPU state to cover the two cases the fast path cannot:
   - **External-build guard** — withhold the next grant while a `swift`/`xcodebuild` process is consuming significant CPU that did *not* originate from the queue (e.g. a manual build in Xcode).
-  - **Stale-grant reclaim** — if a grant is outstanding but the agent has gone silent (crashed / never reported done) *and* no build CPU has been observed for a grace window, reclaim the grant and advance.
+  - **Stale-grant reclaim** — if a grant is outstanding but the agent has gone silent (crashed / never reported done) *and* no build CPU has been observed for a grace window, reclaim the grant and advance. "Silent" is measured from `ActiveGrant.lastSeen`, which *any* ticket-bearing call refreshes (`build_heartbeat` or `build_status`), not from the grant time.
 
 ### Invariants to preserve
 
 - At most one build holds a grant at any time.
 - The poll is **state-aware**: it only *advances* when no grant is outstanding, and only *reclaims* (never re-grants) while a grant is outstanding. Advancing on "no build detected" without checking grant state causes a double-grant during the window between granting an agent and its build ramping up CPU.
 - The stale-grant grace window must be longer than one poll interval, so a slow-to-start build (low-CPU dependency resolution / indexing) is not mistaken for a dead agent.
+- Heartbeats **only extend** a grant, never shorten one. Reclaim still requires *both* silence past the grace window *and* no build CPU: reclaiming on a missed heartbeat alone would yank the slot from a live build whose agent is merely slow to check in, producing the concurrent builds this tool exists to prevent. Heartbeats are therefore strictly optional — an agent that never sends one behaves exactly as it did before they existed.
 - The process/CPU check is an out-of-band safety net layered on top of the queue, not a replacement for the explicit release.

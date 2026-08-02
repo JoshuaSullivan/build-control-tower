@@ -29,6 +29,12 @@ struct HTTPDaemon {
     /// poll queue state without speaking MCP.
     static let statusPath = "status"
 
+    /// The read-only JSON configuration endpoint, e.g.
+    /// `http://127.0.0.1:7373/config`. Publishes the timing policy in force so a
+    /// monitor can derive staleness thresholds from this daemon's actual tuning
+    /// instead of assuming the defaults.
+    static let configPath = "config"
+
     /// Upper bound on a buffered request body. MCP messages are small.
     private static let maxBodySize = 1 << 20  // 1 MiB
 
@@ -38,6 +44,11 @@ struct HTTPDaemon {
         let provideSnapshot = snapshotProvider
         let route = RouterPath(stringLiteral: Self.path)
         let statusRoute = RouterPath(stringLiteral: Self.statusPath)
+        let configRoute = RouterPath(stringLiteral: Self.configPath)
+
+        // The tuning cannot change while the process lives, so it is rendered
+        // once here rather than rebuilt per request.
+        let configSnapshot = ConfigSnapshot(config)
 
         // Every MCP method (POST for messages, GET for the SSE stream, DELETE to
         // end a session) routes through the same bridge.
@@ -47,6 +58,10 @@ struct HTTPDaemon {
 
         // Read-only JSON snapshot for out-of-band monitors. No MCP session.
         router.get(statusRoute) { _, _ in try await Self.status(provideSnapshot) }
+
+        // The timing policy this daemon was launched with. Also read-only and
+        // session-free; a monitor fetches it once and again after a reconnect.
+        router.get(configRoute) { _, _ in try Self.json(configSnapshot) }
 
         logStartup()
 
@@ -67,8 +82,16 @@ struct HTTPDaemon {
 
     /// Serialize the current queue snapshot as JSON for the `/status` endpoint.
     private static func status(_ provideSnapshot: @Sendable () async -> QueueSnapshot) async throws -> Response {
-        let snapshot = await provideSnapshot()
-        let data = try JSONEncoder().encode(snapshot)
+        try json(await provideSnapshot())
+    }
+
+    /// Render a value as a `200 application/json` response.
+    ///
+    /// A default `JSONEncoder` on purpose: the read-only endpoints publish
+    /// camelCase keys exactly as declared, and omit nil optionals rather than
+    /// encoding them as `null`.
+    private static func json(_ value: some Encodable) throws -> Response {
+        let data = try JSONEncoder().encode(value)
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
         return Response(status: .ok, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(bytes: data)))
@@ -126,7 +149,7 @@ struct HTTPDaemon {
         let base = "http://\(host):\(config.port)"
         let message = """
             Build Control Tower listening on \(base)/\(Self.path) \
-            (status: \(base)/\(Self.statusPath))
+            (status: \(base)/\(Self.statusPath), config: \(base)/\(Self.configPath))
             Configuration: \(config.summary)
 
             """

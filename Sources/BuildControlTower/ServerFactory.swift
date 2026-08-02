@@ -3,6 +3,11 @@ import MCP
 
 /// Builds the MCP `Server` and wires its method handlers to the `BuildQueue`.
 enum ServerFactory {
+    /// The server version, reported both in the MCP `initialize` response and by
+    /// the `/config` endpoint. Defined once so the two can never disagree about
+    /// which daemon a client is talking to.
+    static let version = "0.3.0"
+
     /// Server-level guidance sent to clients in the `initialize` response. Unlike
     /// the per-tool descriptions (seen only once an agent inspects a tool), this
     /// primes the agent up front to route *every* build through the queue.
@@ -46,7 +51,7 @@ enum ServerFactory {
     static func makeServer(queue: BuildQueue) async -> Server {
         let server = Server(
             name: "build-control-tower",
-            version: "0.2.0",
+            version: version,
             instructions: instructions,
             capabilities: .init(tools: .init(listChanged: false))
         )

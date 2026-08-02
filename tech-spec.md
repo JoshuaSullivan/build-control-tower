@@ -32,6 +32,10 @@ The queue only serializes builds if every agent talks to the **same** queue. A s
 
 Each connected client gets its own MCP session (one `Server` + transport per session, so JSON-RPC ids and SSE streams stay isolated per client), but all sessions share the single `BuildQueue`. The stateful transport — not the stateless one — is required precisely for that isolation: stateless routing by bare JSON-RPC id would misroute responses between two agents that both number their requests from 1.
 
+Alongside `/mcp`, two read-only JSON endpoints serve out-of-band monitors that have no reason to speak MCP: `/status` renders the live queue, and `/config` publishes the tuning in force. Both are session-free and side-effect-free — in particular `/status` calls `snapshot()` without driving a reconcile, so a menu-bar app polling every few seconds can never extend a grant or advance the queue as a side effect of watching it.
+
+`/config` exists because the timing policy is per-install: a monitor that hardcodes the 360-second grace silently disagrees with any daemon launched with `BCT_GRACE_SECONDS`, and would then flag healthy builds as stale (or miss ones genuinely at risk). Publishing `staleGrantGraceSeconds` and the derived `recommendedHeartbeatSeconds` lets a client's health verdict track this daemon's actual behaviour. The values are immutable for the process lifetime, so clients fetch once and re-fetch only on reconnect.
+
 Consequences to keep in mind:
 - The daemon must be running before agents connect (it is not auto-spawned the way a stdio server is). Run it under launchd or a process manager.
 - The queue is in-memory, so a daemon restart clears it. Acceptable for a session-scoped tool; agents simply re-request.

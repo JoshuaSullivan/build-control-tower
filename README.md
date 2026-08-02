@@ -200,6 +200,30 @@ didn't report them (so "no estimate yet" is distinguishable from `0`):
 }
 ```
 
+Note that `secondsSinceHeartbeat` measures the last *sign of life*, not strictly
+the last `build_heartbeat` — a `build_status` poll refreshes it too. Polling
+`/status` is side-effect-free: it neither extends a grant nor advances the queue.
+
+`GET http://127.0.0.1:7373/config` returns the tuning this daemon was actually
+launched with, so a monitor can derive its own staleness thresholds from real
+policy rather than assuming the defaults:
+
+```json
+{
+  "version": "0.3.0",
+  "port": 7373,
+  "pollSeconds": 120,
+  "staleGrantGraceSeconds": 360,
+  "recommendedHeartbeatSeconds": 120,
+  "cpuThresholdPercent": 40
+}
+```
+
+These values cannot change while the process lives, so fetch once and re-fetch
+only after a reconnect — that implies a restart, which is the only way they move.
+A monitor pointed at an older daemon gets a `404` here and should fall back to the
+defaults above.
+
 ## Configuration
 
 Tunable at launch via environment variables (all optional):

@@ -210,7 +210,7 @@ policy rather than assuming the defaults:
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "0.2.0",
   "port": 7373,
   "pollSeconds": 120,
   "staleGrantGraceSeconds": 360,

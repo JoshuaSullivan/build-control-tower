@@ -6,7 +6,7 @@ enum ServerFactory {
     /// The server version, reported both in the MCP `initialize` response and by
     /// the `/config` endpoint. Defined once so the two can never disagree about
     /// which daemon a client is talking to.
-    static let version = "0.3.0"
+    static let version = "0.2.0"
 
     /// Server-level guidance sent to clients in the `initialize` response. Unlike
     /// the per-tool descriptions (seen only once an agent inspects a tool), this

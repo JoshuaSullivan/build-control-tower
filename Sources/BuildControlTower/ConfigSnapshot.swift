@@ -38,6 +38,11 @@ struct ConfigSnapshot: Sendable, Encodable, Equatable {
     /// Combined `%CPU` above which the probe considers a build to be running.
     let cpuThresholdPercent: Double
 
+    /// How long a pre-empted grant has to release the slot voluntarily before
+    /// the daemon takes it. Lets a monitor show a meaningful countdown once it
+    /// has promoted a build past a running one.
+    let yieldDeadlineSeconds: Int
+
     /// Project a `Configuration` into its published form.
     ///
     /// - Parameters:
@@ -50,6 +55,7 @@ struct ConfigSnapshot: Sendable, Encodable, Equatable {
         self.staleGrantGraceSeconds = Self.seconds(config.staleGrantGrace)
         self.recommendedHeartbeatSeconds = Self.seconds(config.recommendedHeartbeatInterval)
         self.cpuThresholdPercent = config.cpuThresholdPercent
+        self.yieldDeadlineSeconds = Self.seconds(config.yieldDeadline)
     }
 
     /// Whole seconds in a duration, dropping any sub-second remainder.

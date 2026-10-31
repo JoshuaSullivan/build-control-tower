@@ -5,9 +5,8 @@ import Foundation
 /// Behind a protocol so `BuildQueue`'s decision logic can be exercised with a
 /// deterministic stub instead of real system inspection.
 protocol BuildProbe: Sendable {
-    /// `true` when a qualifying build process is currently running: either
-    /// `xcodebuild` (present at all) or the Swift/Clang toolchain consuming
-    /// combined CPU above the configured threshold.
+    /// `true` for a build-driving `xcodebuild` invocation or non-indexing
+    /// compiler processes consuming combined CPU above the threshold.
     func buildActivityDetected() async -> Bool
 }
 
@@ -15,19 +14,16 @@ protocol BuildProbe: Sendable {
 struct SystemBuildProbe: BuildProbe {
     var cpuThresholdPercent: Double
 
-    /// Presence of any of these commands means a build is underway, regardless
-    /// of CPU — `xcodebuild` only runs while it is driving a build.
-    static let orchestratorNames = ["xcodebuild"]
+    // Build services also drive background indexing; their CPU is not evidence
+    // of a build. Inspect their compiler children instead.
+    private static let compilerNames: Set<String> = [
+        "swift-frontend", "swiftc", "swift-build", "clang", "clang++",
+    ]
 
-    /// These run for as long as Xcode is open (its build service) or only
-    /// briefly (compiler/linker), so mere presence proves nothing. They count
-    /// only when their *combined* CPU crosses the threshold, i.e. active
-    /// compilation. `ld` is deliberately omitted: as a substring it matches far
-    /// too many unrelated process paths, and compilation dominates a build's
-    /// wall-clock anyway.
-    static let compilerNames = [
-        "swift-frontend", "swiftc", "swift-build", "clang",
-        "SWBBuildService", "XCBBuildService",
+    private static let xcodebuildQueryOptions: Set<String> = [
+        "-list", "-showBuildSettings", "-showBuildSettingsForIndex",
+        "-showdestinations", "-showsdks", "-version", "-help", "-usage",
+        "-checkFirstLaunchStatus", "-find-executable", "-find-library",
     ]
 
     func buildActivityDetected() async -> Bool {
@@ -45,8 +41,9 @@ struct SystemBuildProbe: BuildProbe {
     static func runPS() -> String {
         let process = Process()
         process.executableURL = URL(filePath: "/bin/ps")
-        // Emit "<%cpu> <command-path>" per line, no header.
-        process.arguments = ["-Axo", "%cpu=,comm="]
+        // ucomm is the executable basename, independent of paths/arguments.
+        // -ww preserves the full argument list, including indexing flags.
+        process.arguments = ["-Awwxo", "%cpu=,ucomm=,args="]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()
@@ -66,18 +63,26 @@ struct SystemBuildProbe: BuildProbe {
         var compilerCPU = 0.0
 
         for line in psOutput.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let separator = trimmed.firstIndex(of: " ") else { continue }
+            let fields = line.split(maxSplits: 2, whereSeparator: \.isWhitespace)
+            guard fields.count == 3,
+                let cpu = Double(fields[0]), cpu.isFinite, cpu >= 0
+            else { continue }
+            let command = String(fields[1])
+            guard command == "xcodebuild" || compilerNames.contains(command) else { continue }
+            let arguments = fields[2].split(whereSeparator: \.isWhitespace)
+            let options = Set(arguments.filter { $0.hasPrefix("-") }.map(String.init))
 
-            let cpuText = trimmed[..<separator]
-            let command = trimmed[trimmed.index(after: separator)...]
-                .trimmingCharacters(in: .whitespaces)
-            guard let cpu = Double(cpuText) else { continue }
+            // Do not exclude -index-store-path or -index-unit-output-path:
+            // normal compilation also writes index data.
+            let indexing =
+                !options.isDisjoint(with: ["-index-file", "-index-file-path", "-fsyntax-only", "-typecheck"])
+                || fields[2].contains("/Index.noindex/Build/")
+            guard !indexing else { continue }
 
-            if orchestratorNames.contains(where: { command.localizedStandardContains($0) }) {
+            if command == "xcodebuild", options.isDisjoint(with: xcodebuildQueryOptions) {
                 return true
             }
-            if compilerNames.contains(where: { command.localizedStandardContains($0) }) {
+            if compilerNames.contains(command) {
                 compilerCPU += cpu
             }
         }

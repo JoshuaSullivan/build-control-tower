@@ -20,6 +20,17 @@ struct Configuration: Sendable {
     /// considered "actively running" by `SystemBuildProbe`.
     var cpuThresholdPercent: Double
 
+    /// How long a pre-empted grant has to stand down of its own accord before
+    /// the slot is taken from it anyway.
+    ///
+    /// The daemon cannot interrupt a running agent, so a pre-empted holder only
+    /// learns it must stop at its next check-in. This window must therefore
+    /// exceed one heartbeat interval, or the slot would be seized before the
+    /// agent could possibly have been told — making the cooperative handoff
+    /// pointless and guaranteeing the overlapping builds it exists to avoid.
+    /// `fromEnvironment` enforces that floor.
+    var yieldDeadline: Duration
+
     /// TCP port the daemon listens on (always bound to 127.0.0.1).
     var port: Int
 
@@ -39,7 +50,8 @@ struct Configuration: Sendable {
         return """
             port \(port), poll \(seconds(pollInterval)), stale-grant grace \
             \(seconds(staleGrantGrace)) (heartbeat cadence \
-            \(seconds(recommendedHeartbeatInterval))), CPU threshold \
+            \(seconds(recommendedHeartbeatInterval))), yield deadline \
+            \(seconds(yieldDeadline)), CPU threshold \
             \(cpuThresholdPercent.formatted(.number))%
             """
     }
@@ -48,11 +60,13 @@ struct Configuration: Sendable {
         pollInterval: .seconds(120),
         staleGrantGrace: .seconds(360),
         cpuThresholdPercent: 40,
+        yieldDeadline: .seconds(180),
         port: 7373
     )
 
-    /// Reads overrides from `BCT_POLL_SECONDS`, `BCT_GRACE_SECONDS`, and
-    /// `BCT_CPU_THRESHOLD`. Missing or invalid values fall back to defaults.
+    /// Reads overrides from `BCT_POLL_SECONDS`, `BCT_GRACE_SECONDS`,
+    /// `BCT_CPU_THRESHOLD`, and `BCT_YIELD_SECONDS`. Missing or invalid values
+    /// fall back to defaults.
     static func fromEnvironment(
         _ env: [String: String] = ProcessInfo.processInfo.environment
     ) -> Configuration {
@@ -81,10 +95,21 @@ struct Configuration: Sendable {
             graceSeconds = pollSeconds * 3
         }
 
+        // Default the yield deadline to 1.5 heartbeat intervals, so a holder
+        // gets one check-in to comply plus margin, and floor any override at a
+        // full interval — below that the slot would be seized before the agent
+        // could have been told to release it.
+        let heartbeatSeconds = graceSeconds / 3
+        var yieldSeconds = heartbeatSeconds + heartbeatSeconds / 2
+        if let raw = env["BCT_YIELD_SECONDS"], let value = Int(raw), value > 0 {
+            yieldSeconds = max(value, heartbeatSeconds)
+        }
+
         return Configuration(
             pollInterval: .seconds(pollSeconds),
             staleGrantGrace: .seconds(graceSeconds),
             cpuThresholdPercent: threshold,
+            yieldDeadline: .seconds(yieldSeconds),
             port: port
         )
     }

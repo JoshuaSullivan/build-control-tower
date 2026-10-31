@@ -23,7 +23,8 @@ struct BuildControlTower {
             sessionManager: sessionManager,
             host: "127.0.0.1",
             config: config,
-            snapshotProvider: { await queue.snapshot() }
+            snapshotProvider: { await queue.snapshot() },
+            promoteHandler: { await queue.promote($0) }
         )
         try await daemon.run()
     }

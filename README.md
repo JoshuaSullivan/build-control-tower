@@ -6,8 +6,14 @@ project at once, everything slows to a crawl. Build Control Tower makes them
 take turns: one build runs at a time, the rest wait in a queue.
 
 It works for both command-line `xcodebuild`/`swift build` and builds started
-inside Xcode — the server watches system CPU to notice builds it didn't grant
-(for example, a manual ⌘B in Xcode) and holds the queue while they run.
+inside Xcode — the server checks process names and arguments to notice builds it
+didn't grant (for example, a manual ⌘B in Xcode) and holds the queue while they run.
+Build-driving `xcodebuild` commands count even at low CPU; otherwise non-indexing
+compiler processes must exceed the combined CPU threshold. Busy Xcode build
+services, indexing/type-checking commands, and queries such as `xcodebuild -list`
+or `-showBuildSettings` do not block the queue. Normal builds that also write
+index data still count. This remains a best-effort safety net, not an Xcode MCP
+dependency or a replacement for tickets and heartbeats.
 
 It runs as a **single long-lived HTTP daemon** on localhost. Every agent on the
 machine connects to that one daemon, so they all share one build queue. (Each
@@ -167,6 +173,38 @@ Add an HTTP server entry pointing at the same URL:
    This is what tells the
    tower a long or quiet build is alive rather than abandoned, and the progress
    value is shown to other agents and to monitoring tools.
+
+   The agent-facing text presents this as **mandatory**, and tells agents to run
+   the build in the background against a log (or with a wait shorter than the
+   interval) rather than as one blocking call — an agent that blocks on the build
+   gets no turn in which to check in, which is the main reason heartbeats get
+   skipped in practice. That's deliberately stricter than the daemon's own rule
+   (below); see [`tech-spec.md`](tech-spec.md) › "Heartbeats".
+
+   **Use a low-cost monitor.** Routine queue/progress polling, heartbeats, and log
+   cleanup do not need an expensive reasoning model. When the client supports
+   delegation and model selection, prefer one inexpensive agent such as **Luna
+   at medium reasoning effort**, reused for the whole build. Hand off the existing
+   ticket, quoted interval, build handle, and exact log paths, with one owner for
+   heartbeats, `finish_build`, and cleanup. Confirm tool and build/log access
+   before handing off. The monitor must not request another ticket or start
+   another build; notify the parent when `GRANTED`, on completion, actionable
+   failure, or a yield/stop request. If delegation or that model is unavailable,
+   use the lowest-cost suitable option without delaying or skipping heartbeats.
+
+   **Keep log polling bounded.** A heartbeat needs no log fetch; estimate progress
+   from elapsed time or a bounded tail/incremental read of the existing output
+   log, and omit it when unknown. Do not repeatedly call `GetBuildLog` or copy
+   full logs just for progress: each call can create a multi-megabyte file even
+   if the inline response is filtered. After any fetch, extract the status or
+   diagnostic lines needed and **immediately delete that call's generated
+   temporary log file and any temporary copies before the next poll**, including
+   on failure, cancellation, or interruption. Delete only exact temporary paths
+   returned by the tool or created by you, never Xcode's original logs or result
+   bundles. For command-line builds, use one unique output log, do not delete or
+   truncate it while the writer is running, and remove it after the writer exits
+   and needed diagnostics have been extracted. Retain a small diagnostic excerpt,
+   not a full log per poll.
 4. **`finish_build`** — always call this when the build finishes (or if you
    abandon a queued request). It immediately hands the slot to the next agent.
 5. **`queue_status`** — inspect who's building and who's waiting.
@@ -176,6 +214,44 @@ reclaims the abandoned slot once the agent has been silent (no heartbeat, no
 status poll) *and* no build CPU has been seen for a grace window, so the queue
 can't deadlock. Heartbeats only ever extend a grant — a missed one never
 reclaims a slot on its own while a build is visibly running.
+
+## Priority pre-emption
+
+When a human needs one build to run *now*, it can jump the queue and interrupt
+whatever is building:
+
+- **`request_priority_build`** — an agent's own route in. Its description gates
+  it hard to "only when your human explicitly asked", because an agent that
+  self-declares priority for its own work makes the queue meaningless.
+- **`POST /promote`** with `{"ticket": "<uuid>"}` — the human's route in, for the
+  monitor app. Promotes a waiting build and pre-empts the running one. Returns
+  the updated `/status` snapshot, `404` if the ticket isn't waiting (already
+  finished, or already holding the slot), `400` for a malformed body.
+
+The daemon **cannot interrupt an agent mid-build** — MCP is pull-based, so the
+holder only hears about it on its next check-in. Pre-emption is therefore
+adaptive:
+
+- **No build CPU visible** — the holder isn't really building, so the slot moves
+  immediately.
+- **A build is clearly running** — the grant is *asked* to stand down. The holder
+  learns on its next `build_heartbeat` / `build_status`, kills its build, and
+  calls `finish_build`. If it never complies within `BCT_YIELD_SECONDS`, the slot
+  is taken anyway.
+
+Either way the pre-empted ticket stays valid and goes to the **head of the
+queue**, so it resumes first — the interruption costs it its turn and nothing
+more. The waiting line is ordered pre-empted → priority → normal, FIFO within
+each group.
+
+Two further rules:
+
+- A priority request **overrides the external-build guard**: it is granted even
+  while a manual Xcode ⌘B is burning CPU, since no ticket exists that could yield
+  to it.
+- A priority grant is **not itself pre-emptible**. A second priority request
+  waits its turn rather than starting a chain of interruptions that discards more
+  work at every link.
 
 ## Monitoring
 
@@ -192,13 +268,28 @@ didn't report them (so "no estimate yet" is distinguishable from `0`):
     "task": "xcodebuild Teams iOS",
     "progress": 45,
     "elapsedSeconds": 90,
-    "secondsSinceHeartbeat": 20
+    "secondsSinceHeartbeat": 20,
+    "priority": false,
+    "yieldRequestedSecondsAgo": 12
   },
   "waiting": [
-    { "id": "7C02…", "agent": "claude-B", "task": "swift test", "waitingSeconds": 240 }
+    {
+      "id": "7C02…",
+      "agent": "claude-B",
+      "task": "swift test",
+      "waitingSeconds": 240,
+      "priority": true,
+      "preempted": false
+    }
   ]
 }
 ```
+
+`priority` marks a build that jumped the queue. `yieldRequestedSecondsAgo` is
+present only while a build has been asked to stand down for a priority request —
+it is living on borrowed time until its agent complies or `BCT_YIELD_SECONDS`
+passes. `preempted` marks a waiting ticket that lost the slot and is waiting to
+resume.
 
 Note that `secondsSinceHeartbeat` measures the last *sign of life*, not strictly
 the last `build_heartbeat` — a `build_status` poll refreshes it too. Polling
@@ -210,12 +301,13 @@ policy rather than assuming the defaults:
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "port": 7373,
   "pollSeconds": 120,
   "staleGrantGraceSeconds": 360,
   "recommendedHeartbeatSeconds": 120,
-  "cpuThresholdPercent": 40
+  "cpuThresholdPercent": 40,
+  "yieldDeadlineSeconds": 180
 }
 ```
 
@@ -234,6 +326,7 @@ Tunable at launch via environment variables (all optional):
 | `BCT_POLL_SECONDS`  | `120`   | Background safety-net poll interval.                           |
 | `BCT_GRACE_SECONDS` | `360`   | Silence before a grant is reclaimed (kept > poll). Agents are told to heartbeat at a third of this. |
 | `BCT_CPU_THRESHOLD` | `40`    | Combined compiler `%CPU` above which a build counts as active. |
+| `BCT_YIELD_SECONDS` | `180`   | How long a pre-empted build has to release the slot before it's taken. Defaults to 1.5× the heartbeat cadence and is floored at 1×, so the holder always gets at least one check-in in which to comply. |
 
 **Making them stick.** Whatever is set when you run `./build.sh --install-agent`
 is baked into the launchd plist, so it survives logout and reboot:
@@ -249,7 +342,7 @@ launch environment you no longer remember:
 
 ```sh
 grep Configuration: ~/Library/Logs/build-control-tower.log
-# Configuration: port 7373, poll 120s, stale-grant grace 900s (heartbeat cadence 300s), CPU threshold 40%
+# Configuration: port 7373, poll 120s, stale-grant grace 900s (heartbeat cadence 300s), yield deadline 450s, CPU threshold 40%
 ```
 
 ## Development

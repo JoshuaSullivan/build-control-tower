@@ -21,6 +21,11 @@ struct HTTPDaemon {
     /// of this struct's stored state while staying `Sendable`.
     let snapshotProvider: @Sendable () async -> QueueSnapshot
 
+    /// Raises a waiting ticket to priority for the `/promote` endpoint, yielding
+    /// the updated queue, or `nil` when no waiting ticket carries that id. A
+    /// closure for the same reason as `snapshotProvider`.
+    let promoteHandler: @Sendable (UUID) async -> QueueSnapshot?
+
     /// The endpoint all MCP traffic uses, e.g. `http://127.0.0.1:7373/mcp`.
     static let path = "mcp"
 
@@ -35,6 +40,16 @@ struct HTTPDaemon {
     /// instead of assuming the defaults.
     static let configPath = "config"
 
+    /// The one *mutating* endpoint, e.g. `http://127.0.0.1:7373/promote`.
+    /// `POST {"ticket": "<uuid>"}` raises a waiting build to priority, which
+    /// pre-empts whatever is running. It exists so the monitor app can offer a
+    /// "build this next" affordance to the human without speaking MCP.
+    ///
+    /// Unauthenticated, like the read-only endpoints, and safe on the same
+    /// grounds: the listener is bound to `127.0.0.1`, so the caller is already
+    /// running as this user on this machine and could stop the daemon outright.
+    static let promotePath = "promote"
+
     /// Upper bound on a buffered request body. MCP messages are small.
     private static let maxBodySize = 1 << 20  // 1 MiB
 
@@ -42,9 +57,11 @@ struct HTTPDaemon {
         let router = Router()
         let manager = sessionManager
         let provideSnapshot = snapshotProvider
+        let promote = promoteHandler
         let route = RouterPath(stringLiteral: Self.path)
         let statusRoute = RouterPath(stringLiteral: Self.statusPath)
         let configRoute = RouterPath(stringLiteral: Self.configPath)
+        let promoteRoute = RouterPath(stringLiteral: Self.promotePath)
 
         // The tuning cannot change while the process lives, so it is rendered
         // once here rather than rebuilt per request.
@@ -62,6 +79,11 @@ struct HTTPDaemon {
         // The timing policy this daemon was launched with. Also read-only and
         // session-free; a monitor fetches it once and again after a reconnect.
         router.get(configRoute) { _, _ in try Self.json(configSnapshot) }
+
+        // Promote a waiting build to priority on a human's instruction. The one
+        // endpoint that changes queue state, and still session-free — the
+        // monitor identifies the build by ticket id from `/status`.
+        router.post(promoteRoute) { request, _ in try await Self.promote(request, using: promote) }
 
         logStartup()
 
@@ -83,6 +105,33 @@ struct HTTPDaemon {
     /// Serialize the current queue snapshot as JSON for the `/status` endpoint.
     private static func status(_ provideSnapshot: @Sendable () async -> QueueSnapshot) async throws -> Response {
         try json(await provideSnapshot())
+    }
+
+    /// The body of a `POST /promote` request.
+    private struct PromoteRequest: Decodable {
+        let ticket: UUID
+    }
+
+    /// Raise a waiting build to priority and return the resulting queue.
+    ///
+    /// Distinguishes the two ways this can fail so the monitor can react
+    /// sensibly: `400` means the caller sent something malformed, while `404`
+    /// means the ticket simply isn't waiting any more — it finished, or it is
+    /// already the build holding the slot — which is a race the monitor should
+    /// absorb by refreshing rather than report as a fault.
+    private static func promote(
+        _ request: Request,
+        using promote: @Sendable (UUID) async -> QueueSnapshot?
+    ) async throws -> Response {
+        var mutableRequest = request
+        let buffer = try await mutableRequest.collectBody(upTo: maxBodySize)
+        guard let body = try? JSONDecoder().decode(PromoteRequest.self, from: Data(buffer.readableBytesView)) else {
+            return Response(status: .badRequest)
+        }
+        guard let snapshot = await promote(body.ticket) else {
+            return Response(status: .notFound)
+        }
+        return try json(snapshot)
     }
 
     /// Render a value as a `200 application/json` response.
@@ -149,7 +198,8 @@ struct HTTPDaemon {
         let base = "http://\(host):\(config.port)"
         let message = """
             Build Control Tower listening on \(base)/\(Self.path) \
-            (status: \(base)/\(Self.statusPath), config: \(base)/\(Self.configPath))
+            (status: \(base)/\(Self.statusPath), config: \(base)/\(Self.configPath), \
+            promote: \(base)/\(Self.promotePath))
             Configuration: \(config.summary)
 
             """
